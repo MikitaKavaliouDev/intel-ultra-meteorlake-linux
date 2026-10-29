@@ -43,6 +43,8 @@ This repository provides automated fixes and documentation for the **PCSpecialis
    **Fix:** Service drop-in `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0` + `KWIN_DRM_NO_AMS=0`.
 7. **Plugged-In Sleep Ignored:** Systemd suppresses hibernate on AC power, and KDE triggers plain suspend.  
    **Fix:** `HibernateOnACPower=yes` + redirecting `systemd-suspend.service` to `suspend-then-hibernate`.
+8. **Plymouth vs KWin DRM Master Conflict:** `rhgb quiet` causes Plymouth to contest KWin for DRM Master during hibernation entry while sessions are unfrozen (`SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0`), freezing the laptop before RAM can be written to disk.  
+   **Fix:** Completely remove `rhgb quiet` from kernel arguments and mask Plymouth sleep services.
 
 ---
 

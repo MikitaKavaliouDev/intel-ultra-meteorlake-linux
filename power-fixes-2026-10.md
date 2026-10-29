@@ -156,24 +156,10 @@ sysctl kernel.printk kernel.printk_devkmsg
 
 ---
 
-## 4. Quiet boot (FIXED)
+## 4. Text Boot Required (DO NOT ENABLE PLYMOUTH / rhgb quiet)
 
-**Problem:** Kernel boot messages scrolled on screen during startup and shutdown.
-No Plymouth splash screen.
-
-**Root cause:** Missing `quiet rhgb` flags. `GRUB_TERMINAL_OUTPUT="console"`
-forced text mode.
-
-**Fix applied:** Staged at `/tmp/opencode/quiet-boot/`
-- Added `rhgb quiet` to `/etc/default/grub` and `/etc/kernel/cmdline`
-- Removed `GRUB_TERMINAL_OUTPUT="console"`
-- Plymouth theme: bgrt (default Fedora)
-
-**Install:**
-```bash
-sudo /tmp/opencode/quiet-boot/install.sh
-sudo reboot
-```
+**Status:** Permanently removed `rhgb quiet`.  
+**Root Cause:** Plymouth graphical splash conflicts with KWin Wayland when `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0` is set. Plymouth and KWin race for DRM master control at `hibernation entry`, resulting in an unrecoverable kernel deadlock before the hibernation snapshot can be written to swap.
 
 ---
 
