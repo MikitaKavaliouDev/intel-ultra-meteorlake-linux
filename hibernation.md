@@ -29,7 +29,7 @@ Getting hibernation to work required solving **six separate, compounding failure
 
 ---
 
-### The 6 Layers We Fixed (The Real Story)
+### The 7 Layers We Fixed (The Real Story)
 
 #### 1. The Swap Space & Code `-22` Demystified
 * **The Symptom:** Boot logs repeatedly showed `PM: Image not found (code -22)`.
@@ -77,6 +77,11 @@ Getting hibernation to work required solving **six separate, compounding failure
   1. Add `HibernateOnACPower=yes` in `sleep.conf.d`.
   2. Drop an override into `/etc/systemd/system/systemd-suspend.service.d/override-to-suspend-then-hibernate.conf` redirecting all suspend actions to `suspend-then-hibernate`.
 
+#### 7. Systemd timerfd Race (Suspend-then-Hibernate Runner)
+* **The Symptom:** The 15-minute RTC handoff fired early or was missed entirely on Intel Core Ultra / Arrow Lake platforms, causing random early hibernation or no hibernation at all.
+* **The Root Cause:** Upstream `systemd-sleep suspend-then-hibernate` relies on an internal timerfd that races on modern Intel Core Ultra / Arrow Lake platforms.
+* **The Fix:** Replace it with `/usr/local/bin/suspend-then-hibernate-runner`, which arms the RTC via `rtcwake` and uses elapsed-time evaluation (`$ELAPSED >= $THRESHOLD`) to decide whether to hibernate or return to the desktop.
+
 ---
 
 ### Step-by-Step Updates for Your Repository
@@ -97,7 +102,7 @@ This document provides a technical post-mortem of why hibernation fails by defau
 
 ---
 
-## The 6 Cascading Failure Points Solved
+## The 7 Cascading Failure Points Solved
 
 ### 1. NVMe Swap Sizing & Kernel Image Invalidation (Code -22)
 * **The Issue:** Kernel journals frequently report `PM: Image not found (code -22)` after failed wake attempts.
@@ -155,6 +160,32 @@ This document provides a technical post-mortem of why hibernation fails by defau
      ExecStart=
      ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
      ```
+
+### 7. Systemd timerfd Race (Suspend-then-Hibernate Runner)
+* **The Issue:** The 15-minute RTC handoff fired early or was missed entirely on Intel Core Ultra / Arrow Lake platforms.
+* **The Root Cause:** Upstream `systemd-sleep suspend-then-hibernate` relies on an internal timerfd that races on modern Intel Core Ultra / Arrow Lake platforms.
+* **The Solution:** Replace it with `/usr/local/bin/suspend-then-hibernate-runner`, which arms the RTC via `rtcwake` and uses elapsed-time evaluation (`$ELAPSED >= $THRESHOLD`) to decide whether to hibernate or return to the desktop. Install the runner and the `override-runner.conf` drop-in:
+  ```bash
+  sudo install -m 0755 bin/suspend-then-hibernate-runner /usr/local/bin/suspend-then-hibernate-runner
+  sudo mkdir -p /etc/systemd/system/systemd-suspend-then-hibernate.service.d
+  sudo tee /etc/systemd/system/systemd-suspend-then-hibernate.service.d/override-runner.conf << 'EOF'
+  [Service]
+  ExecStart=
+  ExecStart=/usr/local/bin/suspend-then-hibernate-runner
+  EOF
+  ```
+
+### 8. NVIDIA Audio (`snd_hda_intel`) PCIe Wake Crash
+* **The Issue:** On resume from `s2idle`, the NVIDIA audio controller (`0000:02:00.1`) re-enumerates and crashes `snd_hda_intel`.
+* **The Fix:** Udev rule stripping all PCI devices with `vendor==0x10de`, plus disabling `snd_hda_intel` probe on HDMI.
+
+### 9. `nvidia-fallback` / Plymouth DRM Master Deadlock
+* **The Issue:** On resume from RAM, Fedora launches `nvidia-fallback.service`, calling `/bin/plymouth message`. Plymouth and KWin race for DRM Master at hibernation entry console switch, causing a hard freeze.
+* **The Fix:** Masking `nvidia-fallback.service` and Plymouth sleep services.
+
+### 10. Resume Sleep Guard vs Runner Race
+* **The Issue:** Post-resume sleep inhibitor blocking automated hibernation.
+* **The Fix:** The runner explicitly stops active sleep-guard instances and allows 3 seconds for PCIe bus and udev rules to settle before triggering hibernation.
 
 ---
 

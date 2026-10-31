@@ -271,7 +271,7 @@ sealert -l 908fe35f-654e-4037-9a10-1b987de061e9
 | `/usr/lib/systemd/system-sleep/50-resume-sleep-guard` | Post-resume sleep inhibitor (25 s) |
 | `/usr/lib/systemd/system-sleep/50-rtc-local-fix` | Post-resume clock correction |
 | `/etc/sysctl.d/99-disable-debug.conf` | printk loglevel 4, devkmsg ratelimit |
-| `/etc/default/grub` | GRUB_CMDLINE_LINUX (clean + rhgb quiet + hibernation flags) |
+| `/etc/default/grub` | GRUB_CMDLINE_LINUX (clean, `rhgb quiet` blacklisted/removed, + hibernation flags) |
 | `/etc/kernel/cmdline` | Kernel cmdline (same as above) |
 | `/etc/modprobe.d/blacklist-nvidia.conf` | EnvyControl-generated NVIDIA blacklist |
 
@@ -333,5 +333,43 @@ sealert -l 908fe35f-654e-4037-9a10-1b987de061e9
 | `/tmp/opencode/resume-fixes/` | `uninstall.sh` | Restore kernel flags + remove hook |
 | `/tmp/opencode/hibernation-fix/` | `install.sh` | Re-add i915.enable_psr=0, pm_async=0, i915.fastboot=0 |
 | `/tmp/opencode/disable-debug/` | `install.sh` | Lower printk loglevel + devkmsg ratelimit |
-| `/tmp/opencode/quiet-boot/` | `install.sh` | Add rhgb quiet + restore graphical terminal |
+| `/tmp/opencode/quiet-boot/` | `install.sh` | **BLACKLISTED** — do not use; adds `rhgb quiet`, which deadlocks Plymouth/KWin |
 | `/tmp/opencode/quiet-boot/` | `uninstall.sh` | Restore text boot |
+
+---
+
+## 10. Suspend-to-Hibernate Transition Lockup & Battery Drain (FIXED — 31 Oct 2026)
+
+**Problem:** Suspend-to-RAM worked, and direct manual hibernation (`sudo systemctl hibernate`) worked. However, after the 15-minute `suspend-then-hibernate` delay expired, the laptop woke from RAM, attempted to hibernate, and suffered an immediate hard freeze at `PM: hibernation: hibernation entry`. The laptop stayed on with a dark screen, completely draining the battery overnight.
+
+### Forensic Analysis from Boot `-1` Journal
+```
+16:15:07 kernel: PM: suspend exit
+16:15:07 resume-sleep-guard[39731]: Lid reported closed after resume; arming sleep guard
+16:15:07 kernel: snd_hda_intel 0000:02:00.1: GPU sound probed, but not operational: please add a quirk to driver_denylist
+16:15:07 systemd[1]: Starting nvidia-fallback.service - Fallback to nouveau as nvidia did not load...
+16:15:07 systemd-journald[694]: Time jumped backwards, rotating.
+16:15:10 suspend-then-hibernate-runner[39539]: [!] Transitioning to 0-Watt Hibernation...
+16:15:10 kernel: PM: hibernation: hibernation entry
+[ --- DEADLOCK: Log halts, SWSUSP image never written to swap --- ]
+```
+
+### The 4 Compounding Causes:
+1. **`nvidia-fallback.service` launched Plymouth:** Even with `rhgb quiet` removed from GRUB, Fedora's `nvidia-fallback.service` ran `/bin/plymouth message` upon detecting the unhandled NVIDIA card on bus wake. Plymouth contested KWin Wayland for DRM Master during the console VT switch, causing a deadlock.
+2. **NVIDIA Audio (`0000:02:00.1`) Re-enumeration:** EnvyControl's default udev rule only removed display class `0x03*`. On resume from `s2idle`, the NVIDIA Audio controller woke up, failed `snd_hda_intel` probe, and hung the PCIe bus when `hibernate()` initiated device freezing (`dpm_suspend_start(PMSG_FREEZE)`).
+3. **`resume-sleep-guard` Collision:** The guard armed a 25-second sleep block inhibitor at 16:15:07, and the runner triggered hibernation 3 seconds later, conflicting with active inhibitors.
+4. **Local RTC Skew Jump:** The RTC was configured in local time (for Windows dual-boot). When `hwclock` adjusted the time, it jumped backwards, rotating the journal and destabilizing systemd timerfds.
+
+### Fix Applied:
+1. **Masked Services:**
+   ```bash
+   sudo systemctl mask nvidia-fallback.service
+   sudo systemctl mask plymouth-start.service plymouth-suspend.service plymouth-hibernate.service
+   ```
+2. **Total NVIDIA Bus Removal (GPU + Audio):** Created `/etc/udev/rules.d/99-remove-all-nvidia.rules`:
+   ```udev
+   ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{remove}="1"
+   ```
+   and blacklisted `snd_hda_codec_hdmi` with `options snd_hda_intel enable=1,0`.
+3. **Runner Hardening:** Updated `bin/suspend-then-hibernate-runner` to stop `resume-sleep-guard` and pause for 3 seconds (`sleep 3`) to allow PCIe unbinding and clocks to settle cleanly before calling `/usr/lib/systemd/systemd-sleep hibernate`.
+4. **Hardware Clock to UTC:** Executed `sudo timedatectl set-local-rtc 0` and enabled `RealTimeIsUniversal=1` in Windows.

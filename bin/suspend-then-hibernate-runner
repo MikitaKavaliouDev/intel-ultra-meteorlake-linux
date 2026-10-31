@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -e
+
+# 1. Read configured HibernateDelaySec (defaults to 15min)
+CONF_DELAY=$(grep -E '^HibernateDelaySec=' /etc/systemd/sleep.conf.d/*.conf 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' ')
+CONF_DELAY=${CONF_DELAY:-15min}
+
+# Convert to seconds
+case "$CONF_DELAY" in
+    *s) SECS="${CONF_DELAY%s}" ;;
+    *min|*m) SECS=$(( ${CONF_DELAY%m*} * 60 )) ;;
+    *h) SECS=$(( ${CONF_DELAY%h} * 3600 )) ;;
+    *) SECS="$CONF_DELAY" ;;
+esac
+
+echo "[*] suspend-then-hibernate: Delay set to ${SECS}s. Arming RTC wake alarm..."
+rtcwake -m no -s "$SECS"
+
+START_TIME=$(date +%s)
+
+# 2. Suspend to RAM
+/usr/lib/systemd/systemd-sleep suspend
+
+END_TIME=$(date +%s)
+ELAPSED=$(( END_TIME - START_TIME ))
+THRESHOLD=$(( SECS - 3 ))
+
+echo "[*] System woke up. Elapsed sleep duration: ${ELAPSED}s (Target: ${SECS}s)"
+
+# 3. Decision: If elapsed time >= target duration, hibernate!
+if [ "$ELAPSED" -ge "$THRESHOLD" ]; then
+    echo "[!] Timer expired (${ELAPSED}s >= ${THRESHOLD}s). Preparing for 0-Watt Hibernation..."
+
+    # SAFETY: Disarm short-lived resume sleep guards so they don't block or race hibernation
+    systemctl stop 'resume-sleep-guard*' 2>/dev/null || true
+
+    # Allow PCIe device unbinding, udev detachment, and time synchronization to settle cleanly
+    sleep 3
+
+    echo "[!] Transitioning to 0-Watt Hibernation..."
+    /usr/lib/systemd/systemd-sleep hibernate
+else
+    echo "[✓] System was woken early by user (${ELAPSED}s < ${THRESHOLD}s). Returning to desktop."
+fi

@@ -43,6 +43,7 @@ This guide documents the complete, battle-tested setup required to achieve relia
 | **Wake Race Condition** | Parallel asynchronous driver resume causes display pipe initialization timeout. | Kernel flag: `pm_async=0`. |
 | **Lit Black Screen on Wake** | Systemd cgroup freezer freezes `user.slice`, deadlocking KWin's DRM master release upon wake. | Service drop-in: `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0` + `KWIN_DRM_NO_AMS=0`. |
 | **Plugged-In Sleep Ignored** | Systemd suppresses hibernate on AC power; KDE sends plain `systemd-suspend.service` on AC. | `HibernateOnACPower=yes` + redirecting `systemd-suspend.service` to `suspend-then-hibernate`. |
+| **Systemd timerfd Race** | Upstream `systemd-sleep suspend-then-hibernate` relies on an internal timerfd that races on modern Intel Core Ultra / Arrow Lake platforms, firing the 15-minute RTC handoff early or missing it entirely. | Replaced with `/usr/local/bin/suspend-then-hibernate-runner`, which arms the RTC via `rtcwake` and uses elapsed-time evaluation (`$ELAPSED >= $THRESHOLD`) to decide whether to hibernate or return to desktop. |
 
 ---
 
@@ -186,6 +187,38 @@ If missing, regenerate the initramfs:
 ```bash
 sudo dracut -f --add "resume"
 ```
+
+---
+
+### Step 8: Install the Suspend-then-Hibernate Runner (Timer Race Solution)
+
+The upstream `systemd-sleep suspend-then-hibernate` relies on an internal
+timerfd that races on modern Intel Core Ultra / Arrow Lake platforms, causing
+the 15-minute RTC handoff to fire early or be missed. The runner replaces it
+and uses elapsed-time evaluation to make the hibernate decision:
+
+```bash
+# Install the runner script
+sudo install -m 0755 bin/suspend-then-hibernate-runner /usr/local/bin/suspend-then-hibernate-runner
+
+# Redirect systemd-suspend-then-hibernate.service to the runner
+sudo mkdir -p /etc/systemd/system/systemd-suspend-then-hibernate.service.d
+sudo tee /etc/systemd/system/systemd-suspend-then-hibernate.service.d/override-runner.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/suspend-then-hibernate-runner
+EOF
+
+sudo systemctl daemon-reload
+```
+
+**How the Timer Race is avoided:** the runner arms the RTC alarm with
+`rtcwake`, suspends to RAM, then measures the actual elapsed sleep time.
+Only when `$ELAPSED >= $THRESHOLD` (target delay minus a 3-second margin)
+does it transition to hibernation; an early wake (lid opened by the user)
+returns to the desktop instead. This elapsed-time evaluation prevents the
+upstream systemd timerfd race condition on modern Intel Core Ultra / Arrow
+Lake platforms.
 
 ---
 

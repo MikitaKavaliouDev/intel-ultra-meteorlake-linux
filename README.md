@@ -44,7 +44,15 @@ This repository provides automated fixes and documentation for the **PCSpecialis
 7. **Plugged-In Sleep Ignored:** Systemd suppresses hibernate on AC power, and KDE triggers plain suspend.  
    **Fix:** `HibernateOnACPower=yes` + redirecting `systemd-suspend.service` to `suspend-then-hibernate`.
 8. **Plymouth vs KWin DRM Master Conflict:** `rhgb quiet` causes Plymouth to contest KWin for DRM Master during hibernation entry while sessions are unfrozen (`SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0`), freezing the laptop before RAM can be written to disk.  
-   **Fix:** Completely remove `rhgb quiet` from kernel arguments and mask Plymouth sleep services.
+   **Fix:** `rhgb quiet` is permanently blacklisted — completely remove it from kernel arguments and mask Plymouth sleep services; it must remain removed.
+9. **Systemd timerfd Race (Suspend-then-Hibernate):** Upstream `systemd-sleep suspend-then-hibernate` relies on an internal timerfd that races on modern Intel Core Ultra / Arrow Lake platforms, firing or missing the 15-minute RTC handoff.  
+   **Fix:** `/usr/local/bin/suspend-then-hibernate-runner` replaces it and uses elapsed-time evaluation (`$ELAPSED >= $THRESHOLD`) to decide whether to hibernate or return to the desktop.
+10. **NVIDIA Audio (`snd_hda_intel`) PCIe Wake Crash:** On resume from `s2idle`, the NVIDIA audio controller (`0000:02:00.1`) re-enumerates and crashes `snd_hda_intel`.  
+    **Fix:** Udev rule stripping all PCI devices with `vendor==0x10de`, plus disabling `snd_hda_intel` probe on HDMI.
+11. **`nvidia-fallback` / Plymouth DRM Master Deadlock:** On resume from RAM, Fedora launches `nvidia-fallback.service`, calling `/bin/plymouth message`. Plymouth and KWin race for DRM Master at hibernation entry console switch, causing a hard freeze.  
+    **Fix:** Masking `nvidia-fallback.service` and Plymouth sleep services.
+12. **Resume Sleep Guard vs Runner Race:** Post-resume sleep inhibitor blocking automated hibernation.  
+    **Fix:** The runner explicitly stops active sleep-guard instances and allows 3 seconds for PCIe bus and udev rules to settle before triggering hibernation.
 
 ---
 

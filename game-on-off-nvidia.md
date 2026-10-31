@@ -72,6 +72,10 @@ sudo envycontrol -s hybrid
 # 2. SAFETY: Lock hibernation to prevent driver teardown lockups during sleep
 sudo systemctl mask systemd-hibernate.service systemd-suspend-then-hibernate.service 2>/dev/null
 
+# 3. Temporarily disable the complete NVIDIA strip rule for gaming
+sudo rm -f /etc/udev/rules.d/99-remove-all-nvidia.rules
+sudo udevadm control --reload-rules
+
 echo ""
 echo "EnvyControl configured for NVIDIA gaming."
 echo "Hibernation has been SAFELY LOCKED for this session."
@@ -112,6 +116,10 @@ sudo envycontrol -s integrated
 
 # 2. RESTORE: Unlock hibernation and suspend-then-hibernate
 sudo systemctl unmask systemd-hibernate.service systemd-suspend-then-hibernate.service 2>/dev/null
+
+# 3. Restore total PCIe detachment for both GPU and Audio
+echo 'ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{remove}="1"' | sudo tee /etc/udev/rules.d/99-remove-all-nvidia.rules
+sudo udevadm control --reload-rules
 
 echo ""
 echo "NVIDIA dGPU will be detached on boot (True 0-Watt idle)."
