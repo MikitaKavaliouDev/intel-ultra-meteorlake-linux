@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-set -e
 
 # 1. Read configured HibernateDelaySec (defaults to 15min)
 CONF_DELAY=$(grep -E '^HibernateDelaySec=' /etc/systemd/sleep.conf.d/*.conf 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' ')
 CONF_DELAY=${CONF_DELAY:-15min}
 
-# Convert to seconds
 case "$CONF_DELAY" in
     *s) SECS="${CONF_DELAY%s}" ;;
     *min|*m) SECS=$(( ${CONF_DELAY%m*} * 60 )) ;;
@@ -13,32 +11,57 @@ case "$CONF_DELAY" in
     *) SECS="$CONF_DELAY" ;;
 esac
 
+# 2. Check local vs UTC RTC
+RTC_OPTS=""
+if timedatectl 2>/dev/null | grep -qi "RTC in local TZ: yes"; then
+    RTC_OPTS="-l"
+fi
+
+# 3. Disable broken GPEs before sleeping
+echo disable > /sys/firmware/acpi/interrupts/gpe6B 2>/dev/null || true
+echo disable > /sys/firmware/acpi/interrupts/gpe6E 2>/dev/null || true
+
 echo "[*] suspend-then-hibernate: Delay set to ${SECS}s. Arming RTC wake alarm..."
-rtcwake -m no -s "$SECS"
+rtcwake $RTC_OPTS -m no -s "$SECS"
 
 START_TIME=$(date +%s)
 
-# 2. Suspend to RAM
+# 4. Suspend to RAM
 /usr/lib/systemd/systemd-sleep suspend
 
 END_TIME=$(date +%s)
 ELAPSED=$(( END_TIME - START_TIME ))
-THRESHOLD=$(( SECS - 3 ))
+THRESHOLD=$(( SECS - 5 ))
 
 echo "[*] System woke up. Elapsed sleep duration: ${ELAPSED}s (Target: ${SECS}s)"
 
-# 3. Decision: If elapsed time >= target duration, hibernate!
-if [ "$ELAPSED" -ge "$THRESHOLD" ]; then
-    echo "[!] Timer expired (${ELAPSED}s >= ${THRESHOLD}s). Preparing for 0-Watt Hibernation..."
+# 5. Check physical lid state
+LID_CLOSED=false
+for state in /proc/acpi/button/lid/*/state; do
+    if [ -r "$state" ] && grep -qi 'closed' "$state"; then
+        LID_CLOSED=true
+        break
+    fi
+done
 
-    # SAFETY: Disarm short-lived resume sleep guards so they don't block or race hibernation
-    systemctl stop 'resume-sleep-guard*' 2>/dev/null || true
+if [ "$LID_CLOSED" = "false" ] && command -v busctl &>/dev/null; then
+    UP_STATE=$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower LidIsClosed 2>/dev/null || true)
+    case "$UP_STATE" in
+        *true*) LID_CLOSED=true ;;
+    esac
+fi
 
-    # Allow PCIe device unbinding, udev detachment, and time synchronization to settle cleanly
+# 6. Evaluation Logic:
+if [ "$ELAPSED" -ge "$THRESHOLD" ] || [ "$LID_CLOSED" = "true" ]; then
+    echo "[!] Target reached or lid closed. Allowing 3s for bus events to settle..."
     sleep 3
+
+    # Clear GPE interrupts again in case wake-up armed them
+    echo disable > /sys/firmware/acpi/interrupts/gpe6B 2>/dev/null || true
+    echo disable > /sys/firmware/acpi/interrupts/gpe6E 2>/dev/null || true
 
     echo "[!] Transitioning to 0-Watt Hibernation..."
     /usr/lib/systemd/systemd-sleep hibernate
 else
-    echo "[✓] System was woken early by user (${ELAPSED}s < ${THRESHOLD}s). Returning to desktop."
+    echo "[✓] System was woken by user opening the lid. Returning to desktop."
 fi

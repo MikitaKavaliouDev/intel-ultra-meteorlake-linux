@@ -1,18 +1,17 @@
-
 # Comprehensive Guide: Suspend-Then-Hibernate on Fedora (KDE Plasma 6 Wayland)
-### Intel Core Ultra 9 275HX (Arrow Lake / Meteor Lake Arc) + NVIDIA RTX Mobile
+### Intel Core Ultra 9 275HX (Arrow Lake-HX) + NVIDIA RTX 5060 Mobile
 
 ---
 
 ## 1. Overview & Target Behavior
 
-This guide documents the complete, battle-tested setup required to achieve reliable **Suspend-then-Hibernate** on hybrid laptops running **Fedora**, **KDE Plasma 6 (Wayland)**, and **systemd**.
+This guide documents the battle-tested configuration required to achieve rock-solid **Suspend-then-Hibernate** on modern Intel Arrow Lake / Tongfang hybrid laptops running **Fedora**, **KDE Plasma 6 (Wayland)**, and **systemd**.
 
-### How the System Operates:
-1. **Immediate Sleep:** Closing the laptop lid (or pressing Sleep, whether on battery or plugged into the charger) puts the laptop into **Suspend to RAM** (`s2idle`) instantly. The power LED pulses slowly.
-2. **Automated 15-Minute Handoff:** An internal RTC hardware alarm waits for **15 minutes**.
-3. **0-Watt Power Cut:** If the lid is not opened within 15 minutes, the system wakes silently without illuminating the screen, compresses RAM (~7–8 GB) to the NVMe swap partition at >600 MB/s, and cuts power completely (**true 0.0W Hibernation**; power LED turns off).
-4. **Clean Wake-up:** Pressing the power button restores your desktop session, open applications, and window arrangement in ~8 seconds without black screens or compositor freezes.
+### Expected Hardware Lifecycle:
+1. **Immediate Sleep:** Closing the lid (on battery or charger) suspends to RAM (`s2idle`) instantly. The power LED pulses slowly.
+2. **15-Minute Timer:** The internal RTC hardware alarm is set for **15 minutes**.
+3. **Automated Handoff:** After 15 minutes, the system wakes silently with the screen off. The custom runner script verifies that the timer expired (or the lid is still closed in a bag), allows the PCIe bus 3 seconds to settle, compresses RAM to the NVMe swap partition at >600 MB/s, and powers off completely (**true 0.0W Hibernation**; LED turns off).
+4. **Clean Wake-up:** Pressing the power button restores your desktop session, open windows, and terminals in ~8 seconds without black screens or compositor freezes.
 5. **On-Demand Gaming (`game-on` / `game-off`):** When you want to game on the dedicated NVIDIA GPU, a single command switches EnvyControl and automatically locks hibernation so driver teardown crashes can never occur.
 
 ---
@@ -21,37 +20,20 @@ This guide documents the complete, battle-tested setup required to achieve relia
 
 | Component | Tested Specification |
 | :--- | :--- |
-| **Laptop Chassis** | PCSpecialist Ionico II 16 (Uniwill GM6HG / Tongfang) |
+| **Chassis** | PCSpecialist Ionico II 16 (Uniwill GM6HG / Tongfang) |
 | **Processor** | Intel Core Ultra 9 275HX (24 Cores / 24 Threads) @ 5.40 GHz |
 | **Integrated GPU** | Intel Arc Graphics / Xe-LPG (Device ID `7d67`) |
-| **Discrete GPU** | NVIDIA GeForce RTX 5060 Max-Q / Mobile |
+| **Discrete GPU** | NVIDIA GeForce RTX 5060 Mobile |
 | **RAM** | 64 GB DDR5 |
 | **Swap Target** | 66.4 GB Dedicated NVMe Partition (`/dev/nvme0n1p7`) |
-| **Display** | 16" 2560x1600 (16:10 QHD+), 60 Hz / 240 Hz |
 | **Operating System** | Fedora Linux 44 (x86_64) • Kernel 7.2.x+ |
 | **Desktop Environment** | KDE Plasma 6.7+ on KWin (Wayland) |
 
 ---
 
-## 3. Technical Problems & Root Causes Solved
-
-| Problem Encountered | Root Cause | Implemented Solution |
-| :--- | :--- | :--- |
-| **ACPI S4 Firmware Hang** | Motherboard UEFI BIOS locks up when calling ACPI S4 (`platform`) sleep. | Enforce OS-level `HibernateMode=shutdown`. |
-| **NVIDIA Teardown Deadlock** | NVIDIA driver deadlocks inside `nv_drm_dev_unload` when PCI shutdown is called during hibernate. | Detach dGPU at PCIe level (`remove=1`) via EnvyControl `integrated` mode for daily use. |
-| **Display Wake Failure (Dark Screen)** | Meteor Lake eDP CX0 transceiver fails link clock re-synchronization on cold wake (PSR2 bug). | Kernel flags: `i915.enable_psr=0` and `i915.fastboot=0`. |
-| **Wake Race Condition** | Parallel asynchronous driver resume causes display pipe initialization timeout. | Kernel flag: `pm_async=0`. |
-| **Lit Black Screen on Wake** | Systemd cgroup freezer freezes `user.slice`, deadlocking KWin's DRM master release upon wake. | Service drop-in: `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0` + `KWIN_DRM_NO_AMS=0`. |
-| **Plugged-In Sleep Ignored** | Systemd suppresses hibernate on AC power; KDE sends plain `systemd-suspend.service` on AC. | `HibernateOnACPower=yes` + redirecting `systemd-suspend.service` to `suspend-then-hibernate`. |
-| **Systemd timerfd Race** | Upstream `systemd-sleep suspend-then-hibernate` relies on an internal timerfd that races on modern Intel Core Ultra / Arrow Lake platforms, firing the 15-minute RTC handoff early or missing it entirely. | Replaced with `/usr/local/bin/suspend-then-hibernate-runner`, which arms the RTC via `rtcwake` and uses elapsed-time evaluation (`$ELAPSED >= $THRESHOLD`) to decide whether to hibernate or return to desktop. |
-
----
-
-## 4. Step-by-Step Configuration
+## 3. Step-by-Step Configuration
 
 ### Step 1: Configure Swap Partition & Kernel Resume Target
-
-Hibernating 64 GB of RAM requires a dedicated physical swap partition at least the size of your RAM (64 GB+).
 
 1. Find the UUID of your active physical swap partition:
    ```bash
@@ -65,56 +47,48 @@ Hibernating 64 GB of RAM requires a dedicated physical swap partition at least t
    UUID=YOUR_SWAP_UUID none swap defaults 0 0
    ```
 
-3. Add the resume target, display transceiver fixes, and NVIDIA blacklists to your kernel command line using `grubby`:
+3. Remove `rhgb quiet` and apply the golden kernel arguments:
    ```bash
-   sudo grubby --update-kernel=ALL --args="resume=UUID=${SWAP_UUID} i915.enable_psr=0 i915.fastboot=0 pm_async=0 rd.driver.blacklist=nouveau,nova_core,nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm modprobe.blacklist=nouveau,nova_core,nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm"
+   # Remove graphical boot splash (prevents KWin DRM Master collision)
+   sudo grubby --update-kernel=ALL --remove-args="rhgb quiet"
+
+   # Apply resume target, PCIe compatibility, and display flags
+   sudo grubby --update-kernel=ALL --args="resume=UUID=${SWAP_UUID} i915.enable_psr=0 pm_async=0 pcie_ports=compat rtc_cmos.use_acpi_alarm=1 rd.driver.blacklist=nouveau,nova_core modprobe.blacklist=nouveau,nova_core"
+   ```
+
+   * **`pcie_ports=compat`:** Disables native PCIe hotplug (`pciehp`), stopping the detached NVIDIA GPU from re-enumerating and deadlocking the bus upon wake from $S0\text{ix}$ suspend.
+   * **`i915.enable_psr=0`:** Disables Panel Self Refresh to ensure the display transceiver wakes reliably.
+   * **`pm_async=0`:** Enforces synchronous driver wake-up to prevent race conditions.
+   * **`rtc_cmos.use_acpi_alarm=1`:** Ensures the hardware RTC alarm fires reliably across dual-boot clock configurations.
+
+---
+
+### Step 2: Systemd Sleep Configuration Drop-Ins
+
+1. **Configure sleep modes and timer:**
+   ```bash
+   sudo mkdir -p /etc/systemd/sleep.conf.d
+   sudo tee /etc/systemd/sleep.conf.d/50-sleep-fix.conf << 'EOF'
+   [Sleep]
+   AllowSuspend=yes
+   AllowHibernation=yes
+   AllowSuspendThenHibernate=yes
+   HibernateMode=shutdown
+   HibernateDelaySec=15min
+   HibernateOnACPower=yes
+   EOF
+   ```
+
+2. **Persist `shutdown` mode in kernel sysfs:**
+   ```bash
+   sudo tee /etc/tmpfiles.d/hibernatemode.conf << 'EOF'
+   w /sys/power/disk - - - - shutdown
+   EOF
    ```
 
 ---
 
-### Step 2: Blacklist NVIDIA Kernel Modules for Daily Intel Mode
-
-Prevent the proprietary NVIDIA modules from loading during boot:
-
-```bash
-sudo tee /etc/modprobe.d/nvidia-blacklist.conf << 'EOF'
-blacklist nouveau
-blacklist nova_core
-blacklist nvidia
-blacklist nvidia_drm
-blacklist nvidia_modeset
-blacklist nvidia_uvm
-EOF
-```
-
----
-
-### Step 3: Configure Systemd Sleep (15-Minute Timer & AC Support)
-
-Create the drop-in configuration for `systemd`:
-
-```bash
-sudo mkdir -p /etc/systemd/sleep.conf.d
-sudo tee /etc/systemd/sleep.conf.d/suspend-then-hibernate.conf << 'EOF'
-[Sleep]
-AllowSuspend=yes
-AllowHibernation=yes
-AllowSuspendThenHibernate=yes
-HibernateMode=shutdown
-HibernateDelaySec=15min
-HibernateOnACPower=yes
-EOF
-```
-
-* `HibernateMode=shutdown`: Cuts power at the OS level, completely bypassing buggy motherboard ACPI S4 BIOS calls.
-* `HibernateDelaySec=15min`: Sets the sleep duration to 15 minutes before the RTC alarm wakes the system to hibernate.
-* `HibernateOnACPower=yes`: Ensures the laptop hibernates after 15 minutes even when connected to the charger.
-
----
-
-### Step 4: Fix KWin Wayland Display Wake & Cgroup Freezer
-
-To eliminate the "illuminated black screen" bug where KWin's DRM master release deadlocks on wake:
+### Step 3: Fix KWin Wayland Display Resume
 
 1. **User session environment variable:**
    ```bash
@@ -122,25 +96,125 @@ To eliminate the "illuminated black screen" bug where KWin's DRM master release 
    echo "KWIN_DRM_NO_AMS=0" >> ~/.config/environment.d/kwin.conf
    ```
 
-2. **Systemd service drop-ins for all sleep targets:**
+2. **Systemd service drop-ins for sleep services:**
    ```bash
-   # 1. Hibernate service drop-in
    sudo mkdir -p /etc/systemd/system/systemd-hibernate.service.d
    sudo tee /etc/systemd/system/systemd-hibernate.service.d/kwin-fix.conf << 'EOF'
    [Service]
    Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0
    EOF
 
-   # 2. Suspend-then-hibernate service drop-in
+   # Link to suspend service
+   sudo mkdir -p /etc/systemd/system/systemd-suspend.service.d
+   sudo ln -sf /etc/systemd/system/systemd-hibernate.service.d/kwin-fix.conf /etc/systemd/system/systemd-suspend.service.d/kwin-fix.conf
+   ```
+
+3. **Mask Plymouth sleep services:**
+   ```bash
+   sudo systemctl mask plymouth-hibernate.service \
+                       plymouth-suspend.service \
+                       plymouth-start.service 2>/dev/null || true
+   ```
+
+---
+
+### Step 4: Install the Hardware-Aware Lid Runner
+
+Systemd's internal `suspend-then-hibernate` uses a 0ms `timerfd` poll upon wake, causing it to misidentify timer expirations as user activity on Intel Arrow Lake. 
+
+The custom runner resolves this by evaluating actual elapsed time, providing a 3-second PCIe settle delay, and disabling broken Tongfang ACPI GPE interrupts:
+
+1. **Create `/usr/local/bin/suspend-then-hibernate-runner`:**
+   ```bash
+   sudo tee /usr/local/bin/suspend-then-hibernate-runner << 'EOF'
+   #!/usr/bin/env bash
+
+   # 1. Read configured HibernateDelaySec (defaults to 15min)
+   CONF_DELAY=$(grep -E '^HibernateDelaySec=' /etc/systemd/sleep.conf.d/*.conf 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' ')
+   CONF_DELAY=${CONF_DELAY:-15min}
+
+   case "$CONF_DELAY" in
+       *s) SECS="${CONF_DELAY%s}" ;;
+       *min|*m) SECS=$(( ${CONF_DELAY%m*} * 60 )) ;;
+       *h) SECS=$(( ${CONF_DELAY%h} * 3600 )) ;;
+       *) SECS="$CONF_DELAY" ;;
+   esac
+
+   # 2. Check local vs UTC RTC
+   RTC_OPTS=""
+   if timedatectl 2>/dev/null | grep -qi "RTC in local TZ: yes"; then
+       RTC_OPTS="-l"
+   fi
+
+   # 3. Disable broken GPEs before sleeping
+   echo disable > /sys/firmware/acpi/interrupts/gpe6B 2>/dev/null || true
+   echo disable > /sys/firmware/acpi/interrupts/gpe6E 2>/dev/null || true
+
+   echo "[*] suspend-then-hibernate: Delay set to ${SECS}s. Arming RTC wake alarm..."
+   rtcwake $RTC_OPTS -m no -s "$SECS"
+
+   START_TIME=$(date +%s)
+
+   # 4. Suspend to RAM
+   /usr/lib/systemd/systemd-sleep suspend
+
+   END_TIME=$(date +%s)
+   ELAPSED=$(( END_TIME - START_TIME ))
+   THRESHOLD=$(( SECS - 5 ))
+
+   echo "[*] System woke up. Elapsed sleep duration: ${ELAPSED}s (Target: ${SECS}s)"
+
+   # 5. Check physical lid state
+   LID_CLOSED=false
+   for state in /proc/acpi/button/lid/*/state; do
+       if [ -r "$state" ] && grep -qi 'closed' "$state"; then
+           LID_CLOSED=true
+           break
+       fi
+   done
+
+   if [ "$LID_CLOSED" = "false" ] && command -v busctl &>/dev/null; then
+       UP_STATE=$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower LidIsClosed 2>/dev/null || true)
+       case "$UP_STATE" in
+           *true*) LID_CLOSED=true ;;
+       esac
+   fi
+
+   # 6. Evaluation Logic:
+   if [ "$ELAPSED" -ge "$THRESHOLD" ] || [ "$LID_CLOSED" = "true" ]; then
+       echo "[!] Target reached or lid closed. Allowing 3s for bus events to settle..."
+       sleep 3
+
+       # Clear GPE interrupts again in case wake-up armed them
+       echo disable > /sys/firmware/acpi/interrupts/gpe6B 2>/dev/null || true
+       echo disable > /sys/firmware/acpi/interrupts/gpe6E 2>/dev/null || true
+
+       echo "[!] Transitioning to 0-Watt Hibernation..."
+       /usr/lib/systemd/systemd-sleep hibernate
+   else
+       echo "[✓] System was woken by user opening the lid. Returning to desktop."
+   fi
+   EOF
+   sudo chmod +x /usr/local/bin/suspend-then-hibernate-runner
+   ```
+
+2. **Hook the runner into systemd:**
+   ```bash
    sudo mkdir -p /etc/systemd/system/systemd-suspend-then-hibernate.service.d
-   sudo ln -sf /etc/systemd/system/systemd-hibernate.service.d/kwin-fix.conf /etc/systemd/system/systemd-suspend-then-hibernate.service.d/kwin-fix.conf
+   sudo tee /etc/systemd/system/systemd-suspend-then-hibernate.service.d/override-runner.conf << 'EOF'
+   [Service]
+   ExecStart=
+   ExecStart=/usr/local/bin/suspend-then-hibernate-runner
+   EOF
+
+   sudo systemctl daemon-reload
    ```
 
 ---
 
 ### Step 5: Universal AC & Lid Suspend Redirect
 
-Because KDE Plasma's "On AC Power" profile and certain menu actions trigger standard `systemd-suspend.service` (which ignores hibernation), we redirect all plain suspend requests to `suspend-then-hibernate`:
+Redirect standard suspend requests to `suspend-then-hibernate` so closing the lid while plugged in also triggers the automated handoff:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/systemd-suspend.service.d
@@ -148,198 +222,42 @@ sudo tee /etc/systemd/system/systemd-suspend.service.d/override-to-suspend-then-
 [Service]
 Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=0
 ExecStart=
-ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
-EOF
-
-sudo systemctl daemon-reload
-```
-
----
-
-### Step 6: Configure Lid Switch in `systemd-logind` & KDE
-
-1. Tell `systemd-logind` to invoke `suspend-then-hibernate` on lid close:
-   ```bash
-   sudo mkdir -p /etc/systemd/logind.conf.d
-   sudo tee /etc/systemd/logind.conf.d/lid-hibernate.conf << 'EOF'
-   [Login]
-   HandleLidSwitch=suspend-then-hibernate
-   HandleLidSwitchExternalPower=suspend-then-hibernate
-   HandleLidSwitchDocked=ignore
-   EOF
-   ```
-
-2. **KDE Plasma System Settings:**
-   * Open **System Settings** → **Power Management** (or **Energy Saving**).
-   * Under both **On Battery** and **On AC Power**:
-     * Set **When laptop lid is closed** to **Sleep** (with our redirect in Step 5, this automatically executes `suspend-then-hibernate`).
-   * Click **Apply**.
-
----
-
-### Step 7: Verify Dracut Initramfs
-
-Ensure the Dracut initramfs includes the resume generator:
-```bash
-lsinitrd | grep systemd-hibernate-resume
-```
-If missing, regenerate the initramfs:
-```bash
-sudo dracut -f --add "resume"
-```
-
----
-
-### Step 8: Install the Suspend-then-Hibernate Runner (Timer Race Solution)
-
-The upstream `systemd-sleep suspend-then-hibernate` relies on an internal
-timerfd that races on modern Intel Core Ultra / Arrow Lake platforms, causing
-the 15-minute RTC handoff to fire early or be missed. The runner replaces it
-and uses elapsed-time evaluation to make the hibernate decision:
-
-```bash
-# Install the runner script
-sudo install -m 0755 bin/suspend-then-hibernate-runner /usr/local/bin/suspend-then-hibernate-runner
-
-# Redirect systemd-suspend-then-hibernate.service to the runner
-sudo mkdir -p /etc/systemd/system/systemd-suspend-then-hibernate.service.d
-sudo tee /etc/systemd/system/systemd-suspend-then-hibernate.service.d/override-runner.conf << 'EOF'
-[Service]
-ExecStart=
 ExecStart=/usr/local/bin/suspend-then-hibernate-runner
 EOF
 
+# Logind configuration
+sudo mkdir -p /etc/systemd/logind.conf.d
+sudo tee /etc/systemd/logind.conf.d/lid-hibernate.conf << 'EOF'
+[Login]
+HandleLidSwitch=suspend-then-hibernate
+HandleLidSwitchExternalPower=suspend-then-hibernate
+HandleLidSwitchDocked=ignore
+EOF
+
 sudo systemctl daemon-reload
 ```
 
-**How the Timer Race is avoided:** the runner arms the RTC alarm with
-`rtcwake`, suspends to RAM, then measures the actual elapsed sleep time.
-Only when `$ELAPSED >= $THRESHOLD` (target delay minus a 3-second margin)
-does it transition to hibernation; an early wake (lid opened by the user)
-returns to the desktop instead. This elapsed-time evaluation prevents the
-upstream systemd timerfd race condition on modern Intel Core Ultra / Arrow
-Lake platforms.
-
 ---
 
-## 5. Dual-Mode Gaming Toggle (EnvyControl + Safety Lock)
+## 4. Verification
 
-Because the proprietary NVIDIA driver deadlocks on hibernation power-off, we keep the dGPU detached on everyday boots (`integrated` mode) and use dedicated wrapper scripts to switch modes safely.
-
-### 1. `/usr/local/bin/game-on` (Enters Gaming Mode & Locks Hibernation)
-```bash
-sudo tee /usr/local/bin/game-on << 'EOF'
-#!/usr/bin/env bash
-set -e
-
-CURRENT=$(envycontrol -q 2>/dev/null || echo "unknown")
-
-if [ "$CURRENT" = "hybrid" ]; then
-    echo "You are already in Gaming (Hybrid) mode!"
-    exit 0
-fi
-
-echo "=================================================="
-echo " Preparing to switch to GAMING MODE (NVIDIA Active)"
-echo "=================================================="
-
-# 1. Switch EnvyControl to Hybrid mode for full GPU power
-sudo envycontrol -s hybrid
-
-# 2. SAFETY: Lock hibernation so you cannot accidentally freeze while gaming
-sudo systemctl mask systemd-hibernate.service systemd-suspend-then-hibernate.service 2>/dev/null
-
-echo ""
-echo "EnvyControl configured for NVIDIA gaming."
-echo "Hibernation has been SAFELY LOCKED for this session."
-echo ""
-read -p "Reboot now to enter Gaming Mode? [Y/n] " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-    sudo reboot
-fi
-EOF
-sudo chmod +x /usr/local/bin/game-on
-```
-
-### 2. `/usr/local/bin/game-off` (Returns to Intel Mode & Unlocks Hibernation)
-```bash
-sudo tee /usr/local/bin/game-off << 'EOF'
-#!/usr/bin/env bash
-set -e
-
-CURRENT=$(envycontrol -q 2>/dev/null || echo "unknown")
-
-if [ "$CURRENT" = "integrated" ]; then
-    echo "You are already in Intel-Only (0W Hibernation) mode!"
-    exit 0
-fi
-
-echo "=================================================="
-echo " Returning to EVERYDAY MODE (Intel-Only 0W)"
-echo "=================================================="
-
-# 1. Switch EnvyControl back to integrated (cuts NVIDIA PCIe power)
-sudo envycontrol -s integrated
-
-# 2. RESTORE: Unlock hibernation and suspend-then-hibernate
-sudo systemctl unmask systemd-hibernate.service systemd-suspend-then-hibernate.service 2>/dev/null
-
-echo ""
-echo "NVIDIA dGPU will be detached on boot (True 0-Watt idle)."
-echo "Hibernation & Suspend-then-Hibernate are UNLOCKED."
-echo ""
-read -p "Reboot now to return to Intel/Hibernation Mode? [Y/n] " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-    sudo reboot
-fi
-EOF
-sudo chmod +x /usr/local/bin/game-off
-```
-
----
-
-## 6. Fast 30-Second Verification Test
-
-You do not need to wait 15 minutes to verify that the automated handoff works.
-
-1. **Temporarily reduce the timer to 30 seconds:**
+### Fast 30-Second Verification Test
+1. Set the delay to 30 seconds:
    ```bash
-   sudo sed -i 's/HibernateDelaySec=.*/HibernateDelaySec=30s/' /etc/systemd/sleep.conf.d/suspend-then-hibernate.conf
+   sudo sed -i 's/HibernateDelaySec=.*/HibernateDelaySec=30s/' /etc/systemd/sleep.conf.d/50-sleep-fix.conf
    sudo systemctl daemon-reload
    ```
-
-2. **Trigger the cycle:**
+2. Close the lid or run:
    ```bash
    sudo systemctl suspend-then-hibernate
    ```
-   *(Or close your laptop lid).*
-
-3. **Observe the hardware timeline:**
-   * **0s – 30s (Suspend Phase):** The screen turns off immediately. The power LED **pulses slowly** (system is suspended to RAM).
-   * **At 30s (Transition Phase):** The internal RTC hardware alarm fires. The system wakes silently (display stays dark) and writes ~7.5 GB from RAM to the NVMe swap partition at ~650 MB/s (~8 seconds).
-   * **At ~40s (Hibernation Phase):** The power LED turns **completely OFF**. Power draw drops to **0.0 Watts**.
-
-4. **Wake up the laptop:**
-   Press the **Power button**. The bootloader detects the hibernation snapshot, restores your session in ~8 seconds, and your desktop appears with all windows intact.
-
-5. **Revert the delay back to 15 minutes:**
+3. Observe:
+   * **0s – 30s:** Suspended to RAM (LED pulses slowly).
+   * **At 30s:** RTC wakes system silently. The runner settles the bus and triggers hibernation.
+   * **At ~40s:** Power LED turns **completely OFF** (0.0 Watts).
+4. Press power button $\rightarrow$ session restores in ~8 seconds.
+5. Revert back to 15 minutes:
    ```bash
-   sudo sed -i 's/HibernateDelaySec=.*/HibernateDelaySec=15min/' /etc/systemd/sleep.conf.d/suspend-then-hibernate.conf
+   sudo sed -i 's/HibernateDelaySec=.*/HibernateDelaySec=15min/' /etc/systemd/sleep.conf.d/50-sleep-fix.conf
    sudo systemctl daemon-reload
    ```
-
----
-
-## 7. Verification & Diagnostic Commands
-
-| Check / Action | Command | Expected Output in Everyday Mode |
-| :--- | :--- | :--- |
-| **Inspect Last Sleep Transition** | `journalctl -b 0 -u systemd-suspend-then-hibernate.service` | Shows suspend, RTC wake, and handoff to hibernate |
-| **Inspect Kernel Memory Timings** | `journalctl -k -b 0 --no-pager \| grep -E "(PM:.*hibernation\|image\|restored)"` | Shows compressed image restore speed (>3000 MB/s snapshot) |
-| **Active GPU Mode** | `envycontrol -q` | `integrated` |
-| **PCIe Power Status** | `lspci \| grep -i nvidia` | *(Empty / Nothing)* |
-| **Hibernation Safety Lock** | `systemctl status systemd-hibernate.service` | `inactive (dead)` (or `masked` while gaming) |
-| **Manual Direct Hibernate** | `sudo systemctl hibernate` | Powers off to swap immediately |
-```
