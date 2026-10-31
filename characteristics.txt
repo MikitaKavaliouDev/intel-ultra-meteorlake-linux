@@ -1,0 +1,28 @@
+
+         .';:cccccccccccc:;,.             ---------------------
+      .;cccccccccccccccccccccc;.          OS: Fedora Linux 44 (KDE Plasma Desktop Edition) x86_64
+    .:cccccccccccccccccccccccccc:.        Host: Ionico Ii 16
+  .;ccccccccccccc;.:dddl:.;ccccccc;.      Kernel: Linux 7.2.11-200.fc44.x86_64
+ .:ccccccccccccc;OWMKOOXMWd;ccccccc:.     Uptime: 17 mins
+.:ccccccccccccc;KMMc;cc;xMMc;ccccccc:.    Packages: 1 (brew), 7 (flatpak), 2744 (rpm)
+,cccccccccccccc;MMM.;cc;;WW:;cccccccc,    Shell: zsh 5.9
+:cccccccccccccc;MMM.;cccccccccccccccc:    Display (MNG007DA5-4): 2560x1600 @ 1.5x in 16", 60 Hz [Built-in]
+:ccccccc;oxOOOo;MMM000k.;cccccccccccc:    Desktop Environment: KDE Plasma 6.7.5
+cccccc;0MMKxdd:;MMMkddc.;cccccccccccc;    Window Manager: KWin (Wayland)
+ccccc;XMO';cccc;MMM.;cccccccccccccccc'    WM Theme: Breeze
+ccccc;MMo;ccccc;MMW.;ccccccccccccccc;     Theme: Breeze (Dark) [Qt], Breeze-Dark [GTK2], Breeze [GTK3]
+ccccc;0MNc.ccc.xMMd;ccccccccccccccc;      Icons: breeze-dark [Qt], breeze-dark [GTK2/3/4]
+cccccc;dNMWXXXWM0:;cccccccccccccc:,       Font: Noto Sans (10pt) [Qt], Noto Sans (10pt) [GTK2/3/4]
+cccccccc;.:odl:.;cccccccccccccc:,.        Cursor: breeze (24px)
+ccccccccccccccccccccccccccccc:'.          Terminal: konsole 26.8.1
+:ccccccccccccccccccccccc:;,..             Terminal Font: Ubuntu Sans Mono (11pt)
+ ':cccccccccccccccc::;,.                  CPU: Intel(R) Core(TM) Ultra 9 275HX (8+16) @ 5.40 GHz
+                                          GPU: Intel Graphics @ 1.90 GHz [Integrated]
+                                          Memory: 7.36 GiB / 62.25 GiB (12%)
+                                          Swap: 0 B / 66.41 GiB (0%)
+                                          Disk (/): 38.93 GiB / 248.86 GiB (16%) - ext4
+                                          Disk (/home): 136.75 GiB / 255.12 GiB (54%) - ext4
+                                          Local IP (wlp128s20f3): 192.168.1.8/24
+                                          Battery (standard): 79% (2 hours, 17 mins remaining) [Discharging]
+                                          Locale: en_US.UTF-8
+
